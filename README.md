@@ -11,6 +11,7 @@ It allows multiple clients to connect to a server, send messages, and interact u
 - Commands:  
   - `/users` → List all connected users  
   - `/quit`  → Disconnect from the server  
+- Sends a **welcome message** to each client  
 - Graceful client disconnection handling  
 
 ---
@@ -45,24 +46,24 @@ go run client.go
 **Terminal 1 (Server):**
 ```
 Server started on :9000
-New client connected: User1
-New client connected: User2
 ```
 
 **Terminal 2 (Client 1):**
 ```
 Connected to chat server.
-Welcome User1!
+Welcome 127.0.0.1:54321!
+127.0.0.1:54321 joined the chat
 /users
-Online users: User1, User2
+Online users: 127.0.0.1:54321
 Hello everyone!
 ```
 
 **Terminal 3 (Client 2):**
 ```
 Connected to chat server.
-Welcome User2!
-User1: Hello everyone!
+Welcome 127.0.0.1:54322!
+127.0.0.1:54322 joined the chat
+127.0.0.1:54321: Hello everyone!
 /quit
 Goodbye!
 ```

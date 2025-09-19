@@ -1,4 +1,3 @@
-// client.go
 package main
 
 import (
@@ -9,35 +8,25 @@ import (
 )
 
 func main() {
-	addr := "127.0.0.1:9000"
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", "localhost:9000")
 	if err != nil {
-		fmt.Println("Unable to connect:", err)
-		return
+		panic(err)
 	}
 	defer conn.Close()
-	fmt.Println("Connected to", addr)
-	// Start goroutine to read from server
+
+	fmt.Println("Connected to chat server.")
+
+	// Reader for incoming messages
 	go func() {
 		scanner := bufio.NewScanner(conn)
 		for scanner.Scan() {
 			fmt.Println(scanner.Text())
 		}
-		os.Exit(0) // server closed or connection lost
 	}()
 
-	// Read stdin and send lines to server
-	input := bufio.NewScanner(os.Stdin)
-	for input.Scan() {
-		line := input.Text()
-		_, err := fmt.Fprintln(conn, line)
-		if err != nil {
-			fmt.Println("Write error:", err)
-			break
-		}
-		if line == "/quit" {
-			// Give server a moment to reply/close
-			return
-		}
+	// Reader for user input
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		fmt.Fprintln(conn, scanner.Text())
 	}
 }

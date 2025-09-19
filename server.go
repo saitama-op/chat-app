@@ -1,4 +1,3 @@
-// server.go
 package main
 
 import (
@@ -9,155 +8,96 @@ import (
 	"sync"
 )
 
-type Client struct {
-	Conn     net.Conn
-	Username string
-	Ch       chan string
-}
+var (
+	clients   = make(map[net.Conn]string) // connection -> username
+	broadcast = make(chan string)
+	mutex     = sync.Mutex{}
+)
 
-type Server struct {
-	Clients map[string]*Client
-	Mutex   sync.RWMutex
-}
-
-func NewServer() *Server {
-	return &Server{
-		Clients: make(map[string]*Client),
-	}
-}
-
-func (s *Server) Broadcast(sender string, msg string) {
-	s.Mutex.RLock()
-	defer s.Mutex.RUnlock()
-	for uname, c := range s.Clients {
-		// don't echo to sender (optional)
-		if uname == sender {
-			continue
-		}
-		select {
-		case c.Ch <- msg:
-		default:
-			// if client's channel is full, drop message (avoid blocking)
-		}
-	}
-}
-
-func (s *Server) AddClient(c *Client) {
-	s.Mutex.Lock()
-	s.Clients[c.Username] = c
-	s.Mutex.Unlock()
-	s.Broadcast("", fmt.Sprintf("*** %s has joined the chat ***", c.Username))
-}
-
-func (s *Server) RemoveClient(c *Client) {
-	s.Mutex.Lock()
-	delete(s.Clients, c.Username)
-	s.Mutex.Unlock()
-	s.Broadcast("", fmt.Sprintf("*** %s has left the chat ***", c.Username))
-	close(c.Ch)
-	c.Conn.Close()
-}
-
-func (s *Server) ListUsers() []string {
-	s.Mutex.RLock()
-	defer s.Mutex.RUnlock()
-	users := make([]string, 0, len(s.Clients))
-	for u := range s.Clients {
-		users = append(users, u)
-	}
-	return users
-}
-
-func handleConnection(conn net.Conn, s *Server) {
+func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	// Prompt for username
-	conn.Write([]byte("Enter username: "))
+
+	// Assign a default username
+	username := conn.RemoteAddr().String()
+
+	mutex.Lock()
+	clients[conn] = username
+	mutex.Unlock()
+
+	// ✅ Send welcome message only to this client
+	conn.Write([]byte(fmt.Sprintf("Welcome %s!\n", username)))
+
+	// Broadcast join event to others
+	broadcast <- fmt.Sprintf("%s joined the chat", username)
+
 	scanner := bufio.NewScanner(conn)
-	if !scanner.Scan() {
-		return
-	}
-	rawName := strings.TrimSpace(scanner.Text())
-	if rawName == "" {
-		rawName = conn.RemoteAddr().String()
-	}
-	// Ensure unique username
-	username := rawName
-	i := 1
-	for {
-		s.Mutex.RLock()
-		_, exists := s.Clients[username]
-		s.Mutex.RUnlock()
-		if !exists {
-			break
-		}
-		username = fmt.Sprintf("%s%d", rawName, i)
-		i++
-	}
-
-	client := &Client{
-		Conn:     conn,
-		Username: username,
-		Ch:       make(chan string, 10),
-	}
-	s.AddClient(client)
-
-	// Goroutine: write messages from server to client
-	go func() {
-		writer := bufio.NewWriter(conn)
-		for msg := range client.Ch {
-			writer.WriteString(msg + "\n")
-			writer.Flush()
-		}
-	}()
-
-	// Tell the connecting client welcome text
-	conn.Write([]byte(fmt.Sprintf("Welcome, %s! Commands: /users, /quit\n", client.Username)))
-	// Read incoming messages from client
 	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "/") {
-			handleCommand(line, client, s)
+		msg := scanner.Text()
+
+		// Commands
+		if strings.HasPrefix(msg, "/") {
+			switch msg {
+			case "/users":
+				mutex.Lock()
+				var userList []string
+				for _, name := range clients {
+					userList = append(userList, name)
+				}
+				mutex.Unlock()
+				conn.Write([]byte("Online users: " + strings.Join(userList, ", ") + "\n"))
+
+			case "/quit":
+				conn.Write([]byte("Goodbye!\n"))
+				mutex.Lock()
+				delete(clients, conn)
+				mutex.Unlock()
+				broadcast <- fmt.Sprintf("%s left the chat", username)
+				return
+
+			default:
+				conn.Write([]byte("Unknown command\n"))
+			}
 			continue
 		}
-		// Broadcast message
-		msg := fmt.Sprintf("%s: %s", client.Username, line)
-		s.Broadcast(client.Username, msg)
+
+		// Broadcast normal message
+		broadcast <- fmt.Sprintf("%s: %s", username, msg)
 	}
-	// Connection closed / client disconnected
-	s.RemoveClient(client)
+
+	// Handle disconnect (e.g., Ctrl+C)
+	mutex.Lock()
+	delete(clients, conn)
+	mutex.Unlock()
+	broadcast <- fmt.Sprintf("%s disconnected", username)
 }
 
-func handleCommand(cmd string, c *Client, s *Server) {
-	cmd = strings.TrimSpace(cmd)
-	switch {
-	case cmd == "/quit":
-		c.Conn.Write([]byte("Goodbye!\n"))
-		// Remove will close channel and conn
-		s.RemoveClient(c)
-	case cmd == "/users":
-		users := s.ListUsers()
-		c.Ch <- fmt.Sprintf("Online (%d): %s", len(users), strings.Join(users, ", "))
-	default:
-		c.Ch <- "Unknown command. Available: /users, /quit"
+func broadcaster() {
+	for {
+		msg := <-broadcast
+		mutex.Lock()
+		for conn := range clients {
+			fmt.Fprintln(conn, msg)
+		}
+		mutex.Unlock()
 	}
 }
 
 func main() {
 	listener, err := net.Listen("tcp", ":9000")
 	if err != nil {
-		fmt.Println("Failed to listen:", err)
-		return
+		panic(err)
 	}
 	defer listener.Close()
-	fmt.Println("Chat server started on :9000")
 
-	server := NewServer()
+	fmt.Println("Server started on :9000")
+
+	go broadcaster()
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Accept error:", err)
 			continue
 		}
-		go handleConnection(conn, server)
+		go handleConnection(conn)
 	}
 }
